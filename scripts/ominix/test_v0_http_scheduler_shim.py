@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 import v0_http_scheduler_shim as shim
 
-
 TOKEN = "shim-test-token"
 
 
@@ -55,6 +54,7 @@ class V0HttpSchedulerShimTest(unittest.TestCase):
         self.assertEqual(info["routes"]["get_model_info"], "/get_model_info")
         self.assertEqual(info["routes"]["get_loads"], "/get_loads")
         self.assertFalse(info["public_openai_api"])
+        self.assertTrue(info["auth_required"])
 
     def test_control_routes_return_scheduler_metadata(self):
         model_info = _json_get(f"{self.base_url}/get_model_info")
@@ -116,7 +116,9 @@ class V0HttpSchedulerShimTest(unittest.TestCase):
             "".join(event.get("text_delta", "") for event in events), "pong"
         )
         self.assertTrue(all(event["request_id"] == "req-shim-1" for event in events))
-        self.assertTrue(all(event.get("trace_id") == "trace-shim-1" for event in events))
+        self.assertTrue(
+            all(event.get("trace_id") == "trace-shim-1" for event in events)
+        )
 
     def test_native_generate_shape_is_accepted(self):
         events = _post_generate(
@@ -132,7 +134,9 @@ class V0HttpSchedulerShimTest(unittest.TestCase):
         )
 
         self.assertEqual(events[-1]["kind"], "done")
-        self.assertEqual("".join(event.get("text_delta", "") for event in events), "pong")
+        self.assertEqual(
+            "".join(event.get("text_delta", "") for event in events), "pong"
+        )
 
     def test_grpc_mode_rejects_text_input_until_tokenizer_slice_lands(self):
         port = _free_port()
@@ -142,6 +146,8 @@ class V0HttpSchedulerShimTest(unittest.TestCase):
             "grpc",
             "--grpc-target",
             "127.0.0.1:1",
+            "--model-id",
+            "deepseek-v4-flash",
         )
         self.addCleanup(_stop_process, proc)
         base_url = f"http://127.0.0.1:{port}"
@@ -153,6 +159,7 @@ class V0HttpSchedulerShimTest(unittest.TestCase):
                 "protocol_version": "ominix.worker.v0",
                 "message_type": "GenerateRequest",
                 "request_id": "req-grpc-text",
+                "model": "deepseek-v4-flash",
                 "input": {
                     "kind": "chat",
                     "messages": [{"role": "user", "content": "Say pong."}],
@@ -175,6 +182,8 @@ class V0HttpSchedulerShimTest(unittest.TestCase):
             "grpc",
             "--grpc-target",
             "127.0.0.1:1",
+            "--model-id",
+            "deepseek-v4-flash",
         )
         self.addCleanup(_stop_process, proc)
         base_url = f"http://127.0.0.1:{port}"
@@ -192,16 +201,105 @@ class V0HttpSchedulerShimTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 401)
 
+    def test_configured_model_identity_is_enforced(self):
+        port = _free_port()
+        proc = _start_shim(
+            port,
+            "--model-id",
+            "C2Rust-FP8-DFlash",
+        )
+        self.addCleanup(_stop_process, proc)
+        base_url = f"http://127.0.0.1:{port}"
+        _wait_for_health(base_url)
+
+        matching = _post_generate(
+            base_url,
+            {
+                "protocol_version": "ominix.worker.v0",
+                "message_type": "GenerateRequest",
+                "request_id": "req-matching-model",
+                "model": "C2Rust-FP8-DFlash",
+                "input": {"kind": "text", "prompt": "ping"},
+            },
+        )
+        self.assertEqual(matching[-1]["kind"], "done")
+
+        mismatch = _post_generate_error(
+            base_url,
+            {
+                "protocol_version": "ominix.worker.v0",
+                "message_type": "GenerateRequest",
+                "request_id": "req-wrong-model",
+                "model": "another-model",
+                "input": {"kind": "text", "prompt": "ping"},
+            },
+        )
+        self.assertEqual(mismatch.code, 400)
+        self.assertIn("configured worker model", mismatch.read().decode("utf-8"))
+
 
 class V0GrpcBridgeUnitTest(unittest.TestCase):
+    def test_token_can_be_loaded_from_environment_without_argv_secret(self):
+        args = shim.parse_args(["--token-env", "OMINIX_TEST_SHIM_TOKEN"])
+        with patch.dict(
+            shim.os.environ, {"OMINIX_TEST_SHIM_TOKEN": TOKEN}, clear=False
+        ):
+            self.assertEqual(shim._resolve_token(args), TOKEN)
+
+    def test_missing_token_environment_variable_is_rejected(self):
+        args = shim.parse_args(["--token-env", "OMINIX_TEST_MISSING_TOKEN"])
+        with patch.dict(shim.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "unset or empty"):
+                shim._resolve_token(args)
+
+    def test_scheduler_model_identity_must_match_configured_model(self):
+        shim._require_scheduler_model_identity(
+            {"served_model_name": "C2Rust-FP8-DFlash"},
+            "C2Rust-FP8-DFlash",
+        )
+        with self.assertRaisesRegex(RuntimeError, "served model"):
+            shim._require_scheduler_model_identity(
+                {"served_model_name": "another-model"},
+                "C2Rust-FP8-DFlash",
+            )
+        with self.assertRaisesRegex(RuntimeError, "served model"):
+            shim._require_scheduler_model_identity(None, "C2Rust-FP8-DFlash")
+
+    def test_grpc_mode_requires_model_identity_and_bearer_token(self):
+        with patch("builtins.print"):
+            self.assertEqual(
+                shim.main(
+                    [
+                        "--mode",
+                        "grpc",
+                        "--grpc-target",
+                        "127.0.0.1:30000",
+                        "--token",
+                        TOKEN,
+                    ]
+                ),
+                2,
+            )
+            self.assertEqual(
+                shim.main(
+                    [
+                        "--mode",
+                        "grpc",
+                        "--grpc-target",
+                        "127.0.0.1:30000",
+                        "--model-id",
+                        "C2Rust-FP8-DFlash",
+                    ]
+                ),
+                2,
+            )
+
     def test_grpc_mode_maps_token_input_and_adapts_fake_protobuf_responses(self):
         fake_grpc = FakeGrpcModule()
         fake_pb2 = FakePb2Module()
         fake_json_format = types.ModuleType("google.protobuf.json_format")
         fake_json_format.MessageToDict = fake_message_to_dict
-        fake_pb2_grpc = types.ModuleType(
-            "smg_grpc_proto.sglang_scheduler_pb2_grpc"
-        )
+        fake_pb2_grpc = types.ModuleType("smg_grpc_proto.sglang_scheduler_pb2_grpc")
         fake_pb2_grpc.SglangSchedulerStub = FakeSglangSchedulerStub
 
         modules = {
@@ -265,9 +363,7 @@ class V0GrpcBridgeUnitTest(unittest.TestCase):
             [event["kind"] for event in events],
             ["prefill_done", "token", "token", "usage", "done"],
         )
-        self.assertEqual(
-            "".join(event.get("text_delta", "") for event in events), "OK"
-        )
+        self.assertEqual("".join(event.get("text_delta", "") for event in events), "OK")
         self.assertTrue(
             all(event["request_id"] == "req-grpc-tokens" for event in events)
         )
@@ -280,9 +376,7 @@ class V0GrpcBridgeUnitTest(unittest.TestCase):
         fake_pb2 = FakePb2Module()
         fake_json_format = types.ModuleType("google.protobuf.json_format")
         fake_json_format.MessageToDict = fake_message_to_dict
-        fake_pb2_grpc = types.ModuleType(
-            "smg_grpc_proto.sglang_scheduler_pb2_grpc"
-        )
+        fake_pb2_grpc = types.ModuleType("smg_grpc_proto.sglang_scheduler_pb2_grpc")
         fake_pb2_grpc.SglangSchedulerStub = FakeSglangSchedulerStub
         modules = {
             "grpc": fake_grpc,
@@ -316,9 +410,7 @@ class V0GrpcBridgeUnitTest(unittest.TestCase):
         fake_pb2 = FakePb2Module()
         fake_json_format = types.ModuleType("google.protobuf.json_format")
         fake_json_format.MessageToDict = fake_message_to_dict
-        fake_pb2_grpc = types.ModuleType(
-            "smg_grpc_proto.sglang_scheduler_pb2_grpc"
-        )
+        fake_pb2_grpc = types.ModuleType("smg_grpc_proto.sglang_scheduler_pb2_grpc")
         fake_pb2_grpc.SglangSchedulerStub = FakeSglangSchedulerStub
         modules = {
             "grpc": fake_grpc,
@@ -354,9 +446,7 @@ class V0GrpcBridgeUnitTest(unittest.TestCase):
         fake_pb2 = FakePb2Module()
         fake_json_format = types.ModuleType("google.protobuf.json_format")
         fake_json_format.MessageToDict = fake_message_to_dict
-        fake_pb2_grpc = types.ModuleType(
-            "sglang.srt.grpc.sglang_scheduler_pb2_grpc"
-        )
+        fake_pb2_grpc = types.ModuleType("sglang.srt.grpc.sglang_scheduler_pb2_grpc")
         fake_pb2_grpc.SglangSchedulerStub = FakeSglangSchedulerStub
         modules = {
             "grpc": fake_grpc,
@@ -418,9 +508,7 @@ class V0GrpcBridgeUnitTest(unittest.TestCase):
         fake_pb2 = FakePb2Module()
         fake_json_format = types.ModuleType("google.protobuf.json_format")
         fake_json_format.MessageToDict = fake_message_to_dict
-        fake_pb2_grpc = types.ModuleType(
-            "sglang.srt.grpc.sglang_scheduler_pb2_grpc"
-        )
+        fake_pb2_grpc = types.ModuleType("sglang.srt.grpc.sglang_scheduler_pb2_grpc")
         fake_pb2_grpc.SglangSchedulerStub = FakeSglangSchedulerStub
         modules = {
             "grpc": fake_grpc,
@@ -676,6 +764,7 @@ class FakeSglangSchedulerStub:
             {
                 "backend": "fake-grpc",
                 "model_path": "deepseek-v4-flash",
+                "served_model_name": "deepseek-v4-flash",
                 "is_generation": True,
             }
         )

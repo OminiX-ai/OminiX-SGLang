@@ -8,9 +8,14 @@ Most documentation files are located under the `docs/` folder.
 ## OminiX Fork Notes
 
 OminiX-specific scheduler-boundary documentation lives under
-[`docs/ominix/`](ominix/). Start with
-[`docs/ominix/DEEPSEEK_V4_FLASH_FINAL_PATH.md`](ominix/DEEPSEEK_V4_FLASH_FINAL_PATH.md)
-for the accepted 8x RTX 5090 DeepSeek-V4-Flash path:
+[`docs/ominix/`](ominix/). The available runbooks are:
+
+- [`docs/ominix/DEEPSEEK_V4_FLASH_FINAL_PATH.md`](ominix/DEEPSEEK_V4_FLASH_FINAL_PATH.md)
+  for DeepSeek-V4-Flash on 8x RTX 5090;
+- [`docs/ominix/C2RUST_QWEN35_27B_FP8_DFLASH_HOPPER.md`](ominix/C2RUST_QWEN35_27B_FP8_DFLASH_HOPPER.md)
+  for C2Rust Qwen3.5-27B block-FP8 + DFlash on one GH200.
+
+The DeepSeek runbook records this accepted serving path:
 
 ```text
 OminiX-API router-only
