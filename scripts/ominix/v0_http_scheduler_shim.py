@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import sys
 import time
 import uuid
@@ -29,7 +30,6 @@ from worker_token_boundary import (
     TokenDeltaDecoder,
     prepare_generate_request,
 )
-
 
 MESSAGE_TYPE_GENERATE_REQUEST = "GenerateRequest"
 SHIM_BACKEND = "sglang-ominix-v0-http-shim"
@@ -103,6 +103,7 @@ class OminiXV0SchedulerHandler(BaseHTTPRequestHandler):
                         "flush_cache": "/flush_cache",
                     },
                     "public_openai_api": False,
+                    "auth_required": self.server.config.token is not None,
                 },
             )
             return
@@ -254,25 +255,35 @@ class OminiXV0SchedulerHandler(BaseHTTPRequestHandler):
             )
 
         message_type = request.get("message_type")
-        if (
-            message_type is not None
-            and message_type != MESSAGE_TYPE_GENERATE_REQUEST
-        ):
+        if message_type is not None and message_type != MESSAGE_TYPE_GENERATE_REQUEST:
             raise ValueError(
                 f"unsupported message_type {message_type!r}; "
                 f"expected {MESSAGE_TYPE_GENERATE_REQUEST!r}"
             )
 
-    def _generate_worker_events(self, request: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        configured_model = self.server.config.model_id
+        if configured_model != "unknown" and request.get("model") != configured_model:
+            raise ValueError("request model does not match the configured worker model")
+
+    def _generate_worker_events(
+        self, request: dict[str, Any]
+    ) -> Iterator[dict[str, Any]]:
         if self.server.config.mode == "fake":
             return self._fake_generate(request)
         if self.server.config.mode == "grpc":
             if not self.server.config.grpc_target:
                 raise RuntimeError("--grpc-target is required when --mode grpc")
-            tokenizer = (
-                self.server.get_tokenizer()
-                if _request_needs_tokenizer(request)
-                else None
+            needs_tokenizer = _request_needs_tokenizer(request)
+            if needs_tokenizer and not self.server.config.tokenizer_path:
+                raise ValueError(
+                    "text/chat/completion requests require a tokenizer; "
+                    "pass --tokenizer-path"
+                )
+            tokenizer = self.server.get_tokenizer() if needs_tokenizer else None
+            model_info = self._grpc_control_get("GetModelInfo")
+            _require_scheduler_model_identity(
+                model_info,
+                self.server.config.model_id,
             )
             return _grpc_generate_worker_events(
                 request,
@@ -610,7 +621,9 @@ def _build_sglang_generate_request(
                 ),
                 default=8,
             ),
-            temperature=_coerce_optional_float(sampling.get("temperature"), default=0.0),
+            temperature=_coerce_optional_float(
+                sampling.get("temperature"), default=0.0
+            ),
             top_p=_coerce_optional_float(sampling.get("top_p"), default=1.0),
             top_k=_coerce_optional_int(sampling.get("top_k"), default=-1),
             min_p=_coerce_optional_float(sampling.get("min_p"), default=0.0),
@@ -690,9 +703,9 @@ class GrpcTextDeltaInjector:
             return
         decoder = self._decoder(sequence_index)
         deltas = decoder.accept(token_ids)
-        self.seen_counts[sequence_index] = (
-            self.seen_counts.get(sequence_index, 0) + len(token_ids)
-        )
+        self.seen_counts[sequence_index] = self.seen_counts.get(
+            sequence_index, 0
+        ) + len(token_ids)
         self.seen_token_ids.setdefault(sequence_index, []).extend(token_ids)
         if deltas:
             chunk["text_deltas"] = deltas
@@ -743,9 +756,7 @@ def _request_needs_tokenizer(request: dict[str, Any]) -> bool:
         kind = input_payload.get("kind")
         if kind in {"chat", "completion", "responses", "text"}:
             return True
-        return any(
-            key in input_payload for key in ("messages", "prompt", "text")
-        )
+        return any(key in input_payload for key in ("messages", "prompt", "text"))
     return any(key in request for key in ("prompt", "text"))
 
 
@@ -765,7 +776,9 @@ def _load_tokenizer(tokenizer_path: str) -> Any:
     try:
         return auto_tokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
     except Exception as exc:
-        raise RuntimeError(f"failed to load tokenizer from {tokenizer_path}: {exc}") from exc
+        raise RuntimeError(
+            f"failed to load tokenizer from {tokenizer_path}: {exc}"
+        ) from exc
 
 
 def _first_present(payload: dict[str, Any], *keys: str) -> Any:
@@ -823,6 +836,17 @@ def _optional_str(value: Any) -> str | None:
     return text if text else None
 
 
+def _require_scheduler_model_identity(
+    model_info: dict[str, Any] | None,
+    expected_model: str,
+) -> None:
+    if (
+        not isinstance(model_info, dict)
+        or model_info.get("served_model_name") != expected_model
+    ):
+        raise RuntimeError("scheduler served model does not match --model-id")
+
+
 def _split_text_delta(text: str) -> tuple[str, str]:
     if len(text) <= 1:
         return text, ""
@@ -834,7 +858,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=19091)
-    parser.add_argument("--token")
+    token_group = parser.add_mutually_exclusive_group()
+    token_group.add_argument("--token")
+    token_group.add_argument(
+        "--token-env",
+        metavar="NAME",
+        help="read the internal bearer token from environment variable NAME",
+    )
     parser.add_argument("--generate-path", default="/generate")
     parser.add_argument("--response-text", default=DEFAULT_RESPONSE_TEXT)
     parser.add_argument(
@@ -860,16 +890,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_token(args: argparse.Namespace) -> str | None:
+    if args.token_env is None:
+        return args.token
+    token = os.environ.get(args.token_env)
+    if not token:
+        raise ValueError(
+            f"token environment variable is unset or empty: {args.token_env}"
+        )
+    return token
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     generate_path = args.generate_path
     if not generate_path.startswith("/"):
         generate_path = f"/{generate_path}"
 
+    try:
+        token = _resolve_token(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.mode == "grpc":
+        if args.model_id == "unknown":
+            print("error: --model-id is required when --mode grpc", file=sys.stderr)
+            return 2
+        if not token:
+            print(
+                "error: --token or --token-env is required when --mode grpc",
+                file=sys.stderr,
+            )
+            return 2
+
     config = ShimConfig(
         host=args.host,
         port=args.port,
-        token=args.token,
+        token=token,
         generate_path=generate_path,
         response_text=args.response_text,
         mode=args.mode,

@@ -49,6 +49,28 @@ for the final architecture, run command, acceptance gates, performance numbers,
 and remaining production hardening work. The executable boundary code lives
 under [`scripts/ominix/`](scripts/ominix/).
 
+C2Rust Qwen3.5-27B can use the same headless boundary with DFlash-accelerated
+inference on one NVIDIA GH200:
+
+```text
+OminiX-API public OpenAI-compatible endpoint
+  -> OminiX-SGLang authenticated worker-v0 HTTP/SSE shim
+  -> OminiX-SGLang SglangScheduler.Generate over loopback gRPC
+  -> C2Rust serialized block-FP8 target + BF16 DFlash draft
+```
+
+OminiX-API owns the public OpenAI-compatible endpoint while OminiX-SGLang owns
+the model runtime and speculative decoding. The validated direct-runtime result
+was 395.976 output tok/s, 4.68x the block-FP8 target-only result and 29.1% faster
+than the prior llama.cpp GGUF-Q8 + DFlash baseline. The complete
+OminiX-API-to-gRPC route remains an integration acceptance gate; the published
+numbers do not include its routing overhead.
+
+See
+[`docs/ominix/C2RUST_QWEN35_27B_FP8_DFLASH_HOPPER.md`](docs/ominix/C2RUST_QWEN35_27B_FP8_DFLASH_HOPPER.md)
+for the pinned runtime, model conversion, launch commands, validation, and
+benchmark method.
+
 ## News
 - [2026/01] 🔥 SGLang Diffusion accelerates video and image generation ([blog](https://lmsys.org/blog/2026-01-16-sglang-diffusion/)).
 - [2025/12] SGLang provides day-0 support for latest open models ([MiMo-V2-Flash](https://lmsys.org/blog/2025-12-16-mimo-v2-flash/), [Nemotron 3 Nano](https://lmsys.org/blog/2025-12-15-run-nvidia-nemotron-3-nano/), [Mistral Large 3](https://github.com/sgl-project/sglang/pull/14213), [LLaDA 2.0 Diffusion LLM](https://lmsys.org/blog/2025-12-19-diffusion-llm/), [MiniMax M2](https://lmsys.org/blog/2025-11-04-miminmax-m2/)).
