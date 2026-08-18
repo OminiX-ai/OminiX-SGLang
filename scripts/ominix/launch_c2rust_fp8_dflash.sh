@@ -52,8 +52,10 @@ else
     default_model_name=C2Rust-FP8
 fi
 served_model_name=${C2RUST_SERVED_MODEL_NAME:-$default_model_name}
-context_length=${C2RUST_CONTEXT_LENGTH:-32768}
+context_length=${C2RUST_CONTEXT_LENGTH:-262144}
 mem_fraction_static=${C2RUST_MEM_FRACTION_STATIC:-0.70}
+chunked_prefill_size=${C2RUST_CHUNKED_PREFILL_SIZE:-8192}
+watchdog_timeout=${C2RUST_WATCHDOG_TIMEOUT:-1800}
 tp_size=${C2RUST_TP_SIZE:-1}
 disable_prefill_graph=${C2RUST_DISABLE_PREFILL_CUDA_GRAPH:-1}
 dflash_block_size=${C2RUST_DFLASH_BLOCK_SIZE:-16}
@@ -69,6 +71,8 @@ fi
 for pair in \
     "C2RUST_PORT:$port" \
     "C2RUST_CONTEXT_LENGTH:$context_length" \
+    "C2RUST_CHUNKED_PREFILL_SIZE:$chunked_prefill_size" \
+    "C2RUST_WATCHDOG_TIMEOUT:$watchdog_timeout" \
     "C2RUST_TP_SIZE:$tp_size" \
     "C2RUST_DFLASH_BLOCK_SIZE:$dflash_block_size"; do
     name=${pair%%:*}
@@ -116,10 +120,11 @@ args=(
     --language-only
     --context-length "$context_length"
     --mem-fraction-static "$mem_fraction_static"
+    --chunked-prefill-size "$chunked_prefill_size"
     --default-chat-template-kwargs '{"enable_thinking": false}'
     --enable-metrics
     --log-level info
-    --watchdog-timeout 600
+    --watchdog-timeout "$watchdog_timeout"
 )
 
 if [[ "$transport" == "grpc" ]]; then
