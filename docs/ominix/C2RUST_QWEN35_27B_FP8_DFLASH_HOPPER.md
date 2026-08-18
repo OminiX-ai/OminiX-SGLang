@@ -128,17 +128,25 @@ docker run --rm \
 
 ## Validated SGLang configuration
 
-The launcher defaults to DFlash and the headless gRPC transport. Its validated
-single-GPU runtime settings are:
+The launcher defaults to DFlash, the headless gRPC transport, and the model's
+native 262,144-token context. The earlier single-GPU validation used these
+settings except for a deliberately restricted 32,768-token context:
 
 - block-FP8 target and unquantized BF16 DFlash draft;
 - FlashInfer attention and `flashinfer_deepgemm` target FP8 GEMM;
 - Triton draft attention and DFlash block size 16;
 - one running request and one decode CUDA-graph batch slot;
-- 32,768-token context, 0.70 static-memory fraction, and language-only mode;
+- 262,144-token configured context, 0.70 static-memory fraction, 8,192-token
+  chunked prefill, and language-only mode;
 - Triton linear-attention decode, FlashInfer linear-attention prefill, and FP32
   Mamba state;
-- thinking disabled in the default chat-template arguments.
+- thinking disabled in the default chat-template arguments;
+- a 1,800-second watchdog suitable for validating native-context prefills.
+
+Before advertising the full context in production, confirm that SGLang reports
+`max_total_num_tokens >= 262144` after profiling the actual GH200. Increase
+`C2RUST_MEM_FRACTION_STATIC` only when the profiled KV pool is too small; reduce
+`C2RUST_CHUNKED_PREFILL_SIZE` if activation memory is the limiting factor.
 
 Start the scheduler in a container on loopback:
 

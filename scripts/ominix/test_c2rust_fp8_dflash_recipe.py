@@ -193,10 +193,27 @@ class LauncherUnitTest(unittest.TestCase):
             "--mamba-radix-cache-strategy no_buffer",
             "--disable-overlap-schedule",
             "--disable-prefill-cuda-graph",
+            "--context-length 262144",
+            "--chunked-prefill-size 8192",
+            "--watchdog-timeout 1800",
         ):
             self.assertIn(expected, command)
         self.assertNotIn("enable-gdn-replayssm-spec", command)
         self.assertNotIn("USE_TRITON_W8A8_FP8_KERNEL", command)
+
+    def test_native_context_runtime_settings_are_overridable(self) -> None:
+        result = self.run_launcher(
+            "dflash",
+            extra_env={
+                "C2RUST_CONTEXT_LENGTH": "131072",
+                "C2RUST_CHUNKED_PREFILL_SIZE": "4096",
+                "C2RUST_WATCHDOG_TIMEOUT": "900",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--context-length 131072", result.stdout)
+        self.assertIn("--chunked-prefill-size 4096", result.stdout)
+        self.assertIn("--watchdog-timeout 900", result.stdout)
 
     def test_target_mode_omits_speculative_flags(self) -> None:
         result = self.run_launcher("target")
