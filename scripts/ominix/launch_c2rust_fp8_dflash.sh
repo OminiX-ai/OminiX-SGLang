@@ -68,6 +68,14 @@ if [[ "$mode" == "ngram" ]]; then
     overlap_flag=${C2RUST_OVERLAP_FLAG:-}
 fi
 
+# Codex-review hardening: $overlap_flag is expanded UNQUOTED in the args
+# array (so an empty value vanishes instead of becoming an empty argv);
+# constrain it so an env override cannot word-split into arbitrary argv.
+if [[ -n "$overlap_flag" && "$overlap_flag" != "--disable-overlap-schedule" ]]; then
+    echo "C2RUST_OVERLAP_FLAG must be empty or --disable-overlap-schedule, got: $overlap_flag" >&2
+    exit 2
+fi
+
 if [[ "$transport" != "grpc" && "$transport" != "http" ]]; then
     echo "C2RUST_TRANSPORT must be grpc or http, got: $transport" >&2
     exit 2
