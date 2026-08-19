@@ -62,7 +62,7 @@ dflash_block_size=${C2RUST_DFLASH_BLOCK_SIZE:-16}
 max_running=${C2RUST_MAX_RUNNING:-1}
 mamba_strategy=no_buffer
 overlap_flag=--disable-overlap-schedule
-if [[ "${1:-}" == "ngram" || "${2:-}" == "ngram" ]]; then
+if [[ "$mode" == "ngram" ]]; then
     max_running=${C2RUST_MAX_RUNNING:-4}
     mamba_strategy=${C2RUST_MAMBA_STRATEGY:-extra_buffer}
     overlap_flag=${C2RUST_OVERLAP_FLAG:-}
