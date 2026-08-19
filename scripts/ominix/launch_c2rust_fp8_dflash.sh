@@ -60,8 +60,12 @@ tp_size=${C2RUST_TP_SIZE:-1}
 disable_prefill_graph=${C2RUST_DISABLE_PREFILL_CUDA_GRAPH:-1}
 dflash_block_size=${C2RUST_DFLASH_BLOCK_SIZE:-16}
 max_running=${C2RUST_MAX_RUNNING:-1}
+mamba_strategy=no_buffer
+overlap_flag=--disable-overlap-schedule
 if [[ "${1:-}" == "ngram" || "${2:-}" == "ngram" ]]; then
     max_running=${C2RUST_MAX_RUNNING:-4}
+    mamba_strategy=${C2RUST_MAMBA_STRATEGY:-extra_buffer}
+    overlap_flag=${C2RUST_OVERLAP_FLAG:-}
 fi
 
 if [[ "$transport" != "grpc" && "$transport" != "http" ]]; then
@@ -118,8 +122,8 @@ args=(
     --cuda-graph-max-bs-decode "$max_running"
     --linear-attn-decode-backend triton
     --linear-attn-prefill-backend flashinfer
-    --mamba-radix-cache-strategy no_buffer
-    --disable-overlap-schedule
+    --mamba-radix-cache-strategy "$mamba_strategy"
+    $overlap_flag
     --mamba-ssm-dtype float32
     --language-only
     --context-length "$context_length"
