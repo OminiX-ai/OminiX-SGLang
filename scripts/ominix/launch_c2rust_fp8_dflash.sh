@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: launch_c2rust_fp8_dflash.sh [--dry-run|--check] [target|dflash]
+Usage: launch_c2rust_fp8_dflash.sh [--dry-run|--check] [target|dflash|ngram]
 
 Required environment:
   C2RUST_MODEL_PATH       Serialized Qwen3.5/C2Rust block-FP8 checkpoint
@@ -31,7 +31,7 @@ if (($# > 0)); then
     usage >&2
     exit 2
 fi
-if [[ "$mode" != "target" && "$mode" != "dflash" ]]; then
+if [[ "$mode" != "target" && "$mode" != "dflash" && "$mode" != "ngram" ]]; then
     echo "unsupported mode: $mode" >&2
     usage >&2
     exit 2
@@ -59,6 +59,10 @@ watchdog_timeout=${C2RUST_WATCHDOG_TIMEOUT:-1800}
 tp_size=${C2RUST_TP_SIZE:-1}
 disable_prefill_graph=${C2RUST_DISABLE_PREFILL_CUDA_GRAPH:-1}
 dflash_block_size=${C2RUST_DFLASH_BLOCK_SIZE:-16}
+max_running=${C2RUST_MAX_RUNNING:-1}
+if [[ "${1:-}" == "ngram" || "${2:-}" == "ngram" ]]; then
+    max_running=${C2RUST_MAX_RUNNING:-4}
+fi
 
 if [[ "$transport" != "grpc" && "$transport" != "http" ]]; then
     echo "C2RUST_TRANSPORT must be grpc or http, got: $transport" >&2
@@ -110,8 +114,8 @@ args=(
     --tp-size "$tp_size"
     --attention-backend flashinfer
     --fp8-gemm-backend flashinfer_deepgemm
-    --max-running-requests 1
-    --cuda-graph-max-bs-decode 1
+    --max-running-requests "$max_running"
+    --cuda-graph-max-bs-decode "$max_running"
     --linear-attn-decode-backend triton
     --linear-attn-prefill-backend flashinfer
     --mamba-radix-cache-strategy no_buffer
@@ -132,6 +136,18 @@ if [[ "$transport" == "grpc" ]]; then
 fi
 if [[ "$disable_prefill_graph" == "1" ]]; then
     args+=(--disable-prefill-cuda-graph)
+fi
+if [[ "$mode" == "ngram" ]]; then
+    args+=(
+        --speculative-algorithm NGRAM
+        --speculative-num-draft-tokens 32
+    )
+    if [[ -n "${C2RUST_NGRAM_CORPUS:-}" ]]; then
+        args+=(
+            --speculative-ngram-external-corpus-path "$C2RUST_NGRAM_CORPUS"
+            --speculative-ngram-external-sam-budget 31
+        )
+    fi
 fi
 if [[ "$mode" == "dflash" ]]; then
     args+=(
